@@ -18,6 +18,7 @@ function App() {
   const [total, setTotal] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [speed, setSpeed] = useState(1)
+  const [trades, setTrades] = useState([]) // 백엔드 /trades 응답
 
   useEffect(() => {
     const container = containerRef.current
@@ -100,6 +101,14 @@ function App() {
     }
   }, [])
 
+  // 백엔드 /trades 에서 체결 내역을 받아온다. (지금은 가짜 데이터)
+  useEffect(() => {
+    fetch('http://localhost:3001/trades')
+      .then((res) => res.json())
+      .then((data) => setTrades(Array.isArray(data) ? data : []))
+      .catch((err) => console.error('Failed to load trades:', err))
+  }, [])
+
   // Append exactly one more candle to the right. Returns false when none left.
   const appendNext = () => {
     const next = cursorRef.current
@@ -161,6 +170,52 @@ function App() {
         ))}
       </div>
       <div ref={containerRef} style={{ width: '100%' }} />
+
+      <h2 style={{ marginTop: 24 }}>체결 내역 ({trades.length})</h2>
+      <table
+        style={{
+          borderCollapse: 'collapse',
+          width: '100%',
+          fontSize: 14,
+        }}
+      >
+        <thead>
+          <tr>
+            {['시각', '심볼', '방향', '가격', '수량'].map((h) => (
+              <th
+                key={h}
+                style={{
+                  borderBottom: '1px solid #ccc',
+                  textAlign: 'left',
+                  padding: '6px 8px',
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map((t) => (
+            <tr key={t.id}>
+              <td style={{ padding: '6px 8px' }}>
+                {new Date(t.time).toLocaleString()}
+              </td>
+              <td style={{ padding: '6px 8px' }}>{t.symbol}</td>
+              <td
+                style={{
+                  padding: '6px 8px',
+                  color: t.side === 'BUY' ? '#2196f3' : '#e91e63',
+                }}
+              >
+                {t.side === 'BUY' ? '매수' : '매도'}
+              </td>
+              <td style={{ padding: '6px 8px' }}>{t.price}</td>
+              <td style={{ padding: '6px 8px' }}>{t.qty}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
