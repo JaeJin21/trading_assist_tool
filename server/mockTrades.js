@@ -4,7 +4,7 @@
 // 1시간봉 캔들 범위 안에 들어오게 한다(=그 시점 캔들이 실제로 존재).
 
 // 왕복 트레이드 정의: 진입 시각(몇 시간 전) / 보유 시간(분) / 진입가 / 청산가 / 수량
-const ROUND_TRIPS = [
+export const ROUND_TRIPS = [
   { entryHoursAgo: 46, holdMin: 90, entry: 77000, exit: 77650, qty: 0.012 },
   { entryHoursAgo: 40, holdMin: 30, entry: 77800, exit: 77500, qty: 0.008 }, // 손실
   { entryHoursAgo: 33, holdMin: 180, entry: 76900, exit: 78200, qty: 0.015 },
@@ -13,7 +13,7 @@ const ROUND_TRIPS = [
   { entryHoursAgo: 12, holdMin: 60, entry: 78800, exit: 78300, qty: 0.018 }, // 손실
 ]
 
-const TAKER_FEE = 0.0004 // 선물 taker 수수료 0.04%
+export const TAKER_FEE = 0.0004 // 선물 taker 수수료 0.04%
 
 // 한 건의 체결 객체를 userTrades 형식으로 만든다.
 function makeFill({ symbol, id, orderId, side, price, qty, realizedPnl, time }) {
