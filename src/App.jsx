@@ -7,6 +7,7 @@ import {
 import { pairTrades, summarize } from './pairTrades'
 import { getCandleAdapter } from './exchanges'
 import { loadHistory, historyCovers, sliceHistory } from './historyCandles'
+import { aggregateCandles } from './aggregateCandles'
 
 const API_BASE = 'http://localhost:3001'
 const SYMBOL = 'BTCUSDT'
@@ -15,9 +16,14 @@ const INITIAL_COUNT = 20
 const BASE_INTERVAL = 500 // ms per candle at 1x speed
 const SPEEDS = [0.5, 1, 2, 5]
 
-// 트레이드를 클릭했을 때 불러올 봉 단위와, 진입/청산 앞뒤로 더 붙일 여유 구간.
+// 트레이드를 클릭했을 때 받아올 봉 단위(원본)와, 진입/청산 앞뒤로 더 붙일 여유 구간.
+// 상위 봉은 이 1분봉을 묶어서 만든다. 다시 받아오지 않는다.
 const TRADE_INTERVAL = '1m'
 const PAD_MIN = 60 // 분
+
+// 복기 차트에서 고를 수 있는 봉 단위.
+// 1주/1달은 이 데이터로 만들기엔 기간이 짧아 넣지 않았다. (거래소에서 직접 받을 것)
+const REPLAY_INTERVALS = ['1m', '5m', '15m', '30m', '1h', '4h']
 
 // 저장해 둔 과거 캔들이 있을 때, 진입 시각 기준으로 얼마나 앞까지 그릴지.
 // 과거 매물대를 보려면 라이브 API 한 번치(1000봉)로는 모자라서 파일을 쓴다.
@@ -156,6 +162,9 @@ function App() {
   const [selectedTrade, setSelectedTrade] = useState(null) // 클릭한 트레이드
   const [chartStatus, setChartStatus] = useState('') // 로딩/에러 메시지
   const [config, setConfig] = useState(null) // 백엔드 /config (어느 거래소인지)
+  const [replayInterval, setReplayInterval] = useState('1m') // 복기 차트 봉 단위
+  // 선택한 트레이드의 원본 1분봉. 봉 단위를 바꿀 때 이걸 다시 묶기만 한다.
+  const replaySourceRef = useRef({ trade: null, base: [], range: '', source: '' })
 
   // 캔들을 어느 거래소에서 받아올지. 체결 내역을 준 거래소와 반드시 같아야 한다.
   const candleAdapter = config ? getCandleAdapter(config.exchange) : null
@@ -244,6 +253,42 @@ function App() {
     return () => controller.abort()
   }, [candleAdapter])
 
+  // 받아둔 1분봉을 고른 봉 단위로 묶어 차트에 올린다.
+  // 봉 단위를 바꿔도 데이터를 다시 받지 않고 이 함수만 다시 부른다.
+  const drawReplay = (trade, base, interval, range, source) => {
+    const candles = aggregateCandles(base, interval)
+    if (candles.length === 0) {
+      setChartStatus('이 구간의 캔들이 없습니다.')
+      return
+    }
+
+    // 진입 시점까지는 그려두고, 그 이후는 재생으로 하나씩 보도록 커서를 잡는다.
+    const entrySec = trade.entryTime / 1000
+    const entryIdx = candles.findLastIndex((c) => c.time <= entrySec)
+    applyCandles(candles, entryIdx >= 0 ? entryIdx + 1 : INITIAL_COUNT)
+
+    // 청산 봉까지 그려지려면 커서가 exitIdx + 1 이어야 한다. 거기에 STOP_TAIL
+    // 만큼 더 가서 멈추도록 자동 정지 지점을 잡는다. 미청산이면 정지 없음.
+    const exitIdx = trade.open
+      ? -1
+      : candles.findLastIndex((c) => c.time <= trade.exitTime / 1000)
+    stopIndexRef.current =
+      exitIdx >= 0 ? Math.min(exitIdx + 1 + STOP_TAIL, candles.length) : null
+
+    chartRef.current?.timeScale().fitContent()
+    setChartStatus(
+      `${trade.symbol} ${interval} · ${range} (${candles.length}봉) · ${source}`
+    )
+  }
+
+  // 봉 단위 버튼. 이미 받아둔 1분봉을 다시 묶어서 그리기만 한다.
+  const handleIntervalChange = (interval) => {
+    setReplayInterval(interval)
+    setPlaying(false)
+    const { trade, base, range, source } = replaySourceRef.current
+    if (trade && base.length > 0) drawReplay(trade, base, interval, range, source)
+  }
+
   // 트레이드 한 건을 클릭했을 때: 진입 시각 앞뒤 구간의 1분봉을 불러와 그린다.
   const handleSelectTrade = async (trade) => {
     if (!candleAdapter) return // 아직 어느 거래소인지 모르는 상태
@@ -297,30 +342,16 @@ function App() {
         return
       }
 
-      // 진입 시점까지는 그려두고, 그 이후는 재생으로 하나씩 보도록 커서를 잡는다.
-      const entrySec = trade.entryTime / 1000
-      const entryIdx = candles.findLastIndex((c) => c.time <= entrySec)
-      applyCandles(candles, entryIdx >= 0 ? entryIdx + 1 : INITIAL_COUNT)
+      const range = `${new Date(startTime).toLocaleString()} ~ ${new Date(endTime).toLocaleString()}`
+      const source = useHistory ? `저장 데이터 (진입 전 ${PAST_DAYS}일)` : '라이브 API'
 
-      // 청산 봉까지 그려지려면 커서가 exitIdx + 1 이어야 한다. 거기에 STOP_TAIL
-      // 만큼 더 가서 멈추도록 자동 정지 지점을 잡는다. 미청산이면 정지 없음.
-      const exitIdx = trade.open
-        ? -1
-        : candles.findLastIndex((c) => c.time <= trade.exitTime / 1000)
-      stopIndexRef.current =
-        exitIdx >= 0 ? Math.min(exitIdx + 1 + STOP_TAIL, candles.length) : null
-
-      chartRef.current?.timeScale().fitContent()
+      // 원본 1분봉을 들고 있는다. 봉 단위 버튼은 이걸 다시 묶기만 한다.
+      replaySourceRef.current = { trade, base: candles, range, source }
+      drawReplay(trade, candles, replayInterval, range, source)
 
       // 캔들이 준비된 뒤에 선택 상태를 바꾼다. 먼저 바꾸면 마커를 그리는 아래
       // 이펙트가 아직 교체 전인 캔들 위에 엉뚱한 마커를 찍는다.
       setSelectedTrade(trade)
-
-      const range = `${new Date(startTime).toLocaleString()} ~ ${new Date(endTime).toLocaleString()}`
-      const source = useHistory ? `저장 데이터 (진입 전 ${PAST_DAYS}일)` : '라이브 API'
-      setChartStatus(
-        `${trade.symbol} ${TRADE_INTERVAL} · ${range} (${candles.length}봉) · ${source}`
-      )
     } catch (err) {
       if (err.name === 'AbortError') return
       console.error('Failed to load trade klines:', err)
@@ -377,7 +408,8 @@ function App() {
       (m) => m.time <= lastDrawnTime
     )
     markersRef.current.setMarkers(markers)
-  }, [selectedTrade, cursor])
+    // 봉 단위가 바뀌면 마커가 붙을 봉도 달라지므로 같이 다시 그린다.
+  }, [selectedTrade, cursor, replayInterval])
 
   const hasMore = cursor < total
 
@@ -442,6 +474,22 @@ function App() {
             }}
           >
             {s}x
+          </button>
+        ))}
+      </div>
+      <div style={{ marginBottom: 8 }}>
+        <span style={{ marginRight: 8 }}>봉:</span>
+        {REPLAY_INTERVALS.map((iv) => (
+          <button
+            key={iv}
+            onClick={() => handleIntervalChange(iv)}
+            disabled={!selectedTrade}
+            style={{
+              marginRight: 4,
+              fontWeight: replayInterval === iv ? 'bold' : 'normal',
+            }}
+          >
+            {iv}
           </button>
         ))}
       </div>
