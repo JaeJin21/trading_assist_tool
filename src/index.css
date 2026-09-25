@@ -1,12 +1,87 @@
+/* 색은 전부 여기 CSS 변수로 모아 둔다. 조정은 이 파일만 고치면 된다.
+ *
+ * 기본이 다크다. :root 에 다크 값을 두고, 라이트일 때만
+ * <html data-theme="light"> 로 덮어쓴다. (App.jsx 가 이 속성을 붙인다)
+ * 차트(lightweight-charts)는 캔버스라 CSS 를 못 읽으므로, App.jsx 가
+ * --chart-* / --candle-* 값을 읽어 차트 옵션으로 넘긴다. */
 :root {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+
+  /* 배경 / 글자 */
+  --bg: #14171c;
+  --text: #e4e7eb;
+  --text-dim: #9099a5; /* 부가 설명 */
+  --text-faint: #6d7684; /* 힌트, 미청산 표시 */
+
+  /* 표 */
+  --border: #2e343d;
+  --row-selected: #223049;
+
+  /* 손익 방향. 이익·매수·롱 = 파랑, 손실·매도·숏 = 빨강 */
+  --up: #2196f3;
+  --down: #e91e63;
+
+  /* 버튼 */
+  --btn-bg: #232830;
+  --btn-border: #39404b;
+  --btn-text: #e4e7eb;
+
+  /* 차트 (캔버스라 CSS 가 직접 먹지 않는다. App.jsx 가 읽어서 넘긴다) */
+  --chart-bg: #14171c;
+  --chart-text: #9099a5;
+  --chart-grid: #262c35;
+  --candle-up: #26a69a;
+  --candle-down: #ef5350;
+}
+
+:root[data-theme='light'] {
+  --bg: #ffffff;
+  --text: #213547;
+  --text-dim: #555555;
+  --text-faint: #888888;
+
+  --border: #cccccc;
+  --row-selected: #eef4ff;
+
+  --up: #2196f3;
+  --down: #e91e63;
+
+  --btn-bg: #f2f2f2;
+  --btn-border: #c9c9c9;
+  --btn-text: #213547;
+
+  --chart-bg: #ffffff;
+  --chart-text: #333333;
+  --chart-grid: #e1e3e6;
+  --candle-up: #26a69a;
+  --candle-down: #ef5350;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background-color: #ffffff;
-  color: #213547;
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--btn-text);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--up);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   createChart,
   CandlestickSeries,
@@ -10,6 +10,11 @@ import { loadHistory, historyCovers, sliceHistory } from './historyCandles'
 import { aggregateCandles } from './aggregateCandles'
 
 const API_BASE = 'http://localhost:3001'
+
+// 테마는 브라우저에 기억해 둔다. 저장된 게 없으면 다크가 기본.
+const THEME_KEY = 'trading-assist-theme'
+const readSavedTheme = () =>
+  localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'
 const SYMBOL = 'BTCUSDT'
 
 const INITIAL_COUNT = 20
@@ -37,9 +42,61 @@ const STOP_TAIL = 5
 const TRADES_PER_PAGE = 5
 const FILLS_PER_PAGE = 10
 
+// 테마 색은 index.css 의 CSS 변수 한 곳에 모여 있다.
+// 캔버스로 그리는 차트/마커는 CSS 를 못 읽으므로 여기서 값을 꺼내 넘긴다.
+//
+// CSS 가 아직/전혀 안 붙은 상태면 getPropertyValue 가 빈 문자열을 준다.
+// 그걸 그대로 차트에 넘기면 캔버스가 무효한 색을 무시하고 검정을 쓰기 때문에
+// 배경도 봉도 검정이 되어 아무것도 안 보인다. (실제로 겪은 증상)
+// 그래서 못 읽으면 다크 기본값으로 떨어뜨리고, 원인을 알 수 있게 경고를 남긴다.
+const FALLBACK_COLORS = {
+  '--chart-bg': '#14171c',
+  '--chart-text': '#9099a5',
+  '--chart-grid': '#262c35',
+  '--candle-up': '#26a69a',
+  '--candle-down': '#ef5350',
+  '--up': '#2196f3',
+  '--down': '#e91e63',
+}
+
+const cssVar = (name) => {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim()
+  if (value) return value
+  console.warn(`CSS 변수 ${name} 를 읽지 못했습니다. index.css 가 적용됐는지 확인하세요.`)
+  return FALLBACK_COLORS[name] ?? '#888888'
+}
+
+// 지금 테마의 차트 옵션. (배경, 축 글자, 격자선)
+const chartThemeOptions = () => ({
+  layout: {
+    background: { color: cssVar('--chart-bg') },
+    textColor: cssVar('--chart-text'),
+  },
+  grid: {
+    vertLines: { color: cssVar('--chart-grid') },
+    horzLines: { color: cssVar('--chart-grid') },
+  },
+})
+
+// 지금 테마의 봉 색. 몸통/테두리/꼬리를 같은 색으로 맞춘다.
+const candleThemeOptions = () => {
+  const up = cssVar('--candle-up')
+  const down = cssVar('--candle-down')
+  return {
+    upColor: up,
+    downColor: down,
+    borderUpColor: up,
+    borderDownColor: down,
+    wickUpColor: up,
+    wickDownColor: down,
+  }
+}
+
 const tableStyle = { borderCollapse: 'collapse', width: '100%', fontSize: 14 }
 const thStyle = {
-  borderBottom: '1px solid #ccc',
+  borderBottom: '1px solid var(--border)',
   textAlign: 'left',
   padding: '6px 8px',
   whiteSpace: 'nowrap',
@@ -47,7 +104,8 @@ const thStyle = {
 const tdStyle = { padding: '6px 8px', whiteSpace: 'nowrap' }
 
 // 손익 색: 이익은 파랑, 손실은 빨강, 0 은 기본색.
-const pnlColor = (v) => (v > 0 ? '#2196f3' : v < 0 ? '#e91e63' : '#333')
+const pnlColor = (v) =>
+  v > 0 ? 'var(--up)' : v < 0 ? 'var(--down)' : 'var(--text)'
 
 // 부호를 항상 붙여서 표시. (+12.34 / -5.60)
 const fmtPnl = (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`
@@ -79,7 +137,7 @@ function buildTradeMarkers(trade, candles) {
     markers.push({
       time: entryTime,
       position: long ? 'belowBar' : 'aboveBar',
-      color: '#2196f3',
+      color: cssVar('--up'),
       shape: long ? 'arrowUp' : 'arrowDown',
       text: `진입 ${trade.entryPrice.toFixed(2)}`,
     })
@@ -91,7 +149,7 @@ function buildTradeMarkers(trade, candles) {
       markers.push({
         time: exitTime,
         position: long ? 'aboveBar' : 'belowBar',
-        color: '#e91e63',
+        color: cssVar('--down'),
         shape: long ? 'arrowDown' : 'arrowUp',
         text: `청산 ${trade.exitPrice.toFixed(2)}`,
       })
@@ -163,6 +221,7 @@ function App() {
   const [chartStatus, setChartStatus] = useState('') // 로딩/에러 메시지
   const [config, setConfig] = useState(null) // 백엔드 /config (어느 거래소인지)
   const [replayInterval, setReplayInterval] = useState('1m') // 복기 차트 봉 단위
+  const [theme, setTheme] = useState(readSavedTheme) // 'dark' | 'light'
   // 선택한 트레이드의 원본 1분봉. 봉 단위를 바꿀 때 이걸 다시 묶기만 한다.
   const replaySourceRef = useRef({ trade: null, base: [], range: '', source: '' })
 
@@ -180,6 +239,21 @@ function App() {
     setTotal(candles.length)
   }
 
+  // <html data-theme> 를 바꾸면 index.css 의 변수가 통째로 갈린다.
+  // 첫 그리기 전에 붙어야 라이트로 저장해 둔 경우 다크가 깜빡이지 않으므로
+  // useEffect 가 아니라 useLayoutEffect 를 쓴다.
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem(THEME_KEY, theme)
+  }, [theme])
+
+  // 차트는 캔버스라 CSS 변수가 저절로 따라오지 않는다. 테마가 바뀌면
+  // 바뀐 변수 값을 다시 읽어서 차트/봉 옵션으로 넣어 준다.
+  useEffect(() => {
+    chartRef.current?.applyOptions(chartThemeOptions())
+    seriesRef.current?.applyOptions(candleThemeOptions())
+  }, [theme])
+
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -187,18 +261,11 @@ function App() {
     const chart = createChart(container, {
       width: container.clientWidth,
       height: 400,
-      layout: {
-        background: { color: '#ffffff' },
-        textColor: '#333333',
-      },
-      grid: {
-        vertLines: { color: '#e1e3e6' },
-        horzLines: { color: '#e1e3e6' },
-      },
+      ...chartThemeOptions(),
     })
     chartRef.current = chart
 
-    const series = chart.addSeries(CandlestickSeries)
+    const series = chart.addSeries(CandlestickSeries, candleThemeOptions())
     seriesRef.current = series
     markersRef.current = createSeriesMarkers(series, [])
 
@@ -409,7 +476,8 @@ function App() {
     )
     markersRef.current.setMarkers(markers)
     // 봉 단위가 바뀌면 마커가 붙을 봉도 달라지므로 같이 다시 그린다.
-  }, [selectedTrade, cursor, replayInterval])
+    // 테마가 바뀌면 마커 색(CSS 변수에서 읽는다)도 다시 잡아야 한다.
+  }, [selectedTrade, cursor, replayInterval, theme])
 
   const hasMore = cursor < total
 
@@ -441,8 +509,22 @@ function App() {
 
   return (
     <div style={{ padding: 16 }}>
-      <h1 style={{ marginBottom: 4 }}>Trading Assist</h1>
-      <div style={{ fontSize: 13, color: '#555', marginBottom: 12 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <h1 style={{ marginBottom: 4 }}>Trading Assist</h1>
+        <button
+          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+          title="라이트/다크 전환"
+        >
+          {theme === 'dark' ? '라이트 모드' : '다크 모드'}
+        </button>
+      </div>
+      <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 12 }}>
         {config
           ? `${config.label} · ${config.useMock ? '목데이터' : '실거래 데이터'}`
           : '거래소 확인 중...'}
@@ -494,14 +576,14 @@ function App() {
         ))}
       </div>
       {chartStatus && (
-        <div style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 8 }}>
           {chartStatus}
         </div>
       )}
       <div ref={containerRef} style={{ width: '100%' }} />
 
       <h2 style={{ marginTop: 24 }}>트레이드 ({pairedTrades.length})</h2>
-      <div style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>
+      <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 8 }}>
         청산 {stats.closed}건 · 승 {stats.wins} / 패 {stats.losses} · 승률{' '}
         {stats.winRate.toFixed(1)}% · 순손익{' '}
         <strong style={{ color: pnlColor(stats.netPnl) }}>
@@ -509,7 +591,7 @@ function App() {
         </strong>{' '}
         (수수료 {stats.fee.toFixed(4)}){stats.open > 0 && ` · 미청산 ${stats.open}건`}
       </div>
-      <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 8 }}>
         행을 클릭하면 그 트레이드의 진입 시각 전후 1분봉을 불러옵니다. 최신
         트레이드가 위에 오고, 한 페이지에 {TRADES_PER_PAGE}건씩 보여줍니다.
       </div>
@@ -542,14 +624,17 @@ function App() {
               onClick={() => handleSelectTrade(t)}
               style={{
                 cursor: 'pointer',
-                background: t.id === selectedTrade?.id ? '#eef4ff' : 'transparent',
+                background:
+                  t.id === selectedTrade?.id
+                    ? 'var(--row-selected)'
+                    : 'transparent',
               }}
             >
               <td style={tdStyle}>{t.symbol}</td>
               <td
                 style={{
                   ...tdStyle,
-                  color: t.direction === 'LONG' ? '#2196f3' : '#e91e63',
+                  color: t.direction === 'LONG' ? 'var(--up)' : 'var(--down)',
                 }}
               >
                 {t.direction === 'LONG' ? '롱' : '숏'}
@@ -560,7 +645,7 @@ function App() {
               <td style={tdStyle}>{new Date(t.entryTime).toLocaleString()}</td>
               <td style={tdStyle}>
                 {t.open ? (
-                  <span style={{ color: '#999' }}>미청산</span>
+                  <span style={{ color: 'var(--text-faint)' }}>미청산</span>
                 ) : (
                   new Date(t.exitTime).toLocaleString()
                 )}
@@ -584,7 +669,7 @@ function App() {
       />
 
       <h2 style={{ marginTop: 24 }}>체결 내역 ({trades.length})</h2>
-      <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 8 }}>
         최신 체결이 위에 옵니다. 한 페이지에 {FILLS_PER_PAGE}건씩 보여줍니다.
       </div>
       <table style={tableStyle}>
@@ -605,7 +690,7 @@ function App() {
               <td
                 style={{
                   ...tdStyle,
-                  color: t.side === 'BUY' ? '#2196f3' : '#e91e63',
+                  color: t.side === 'BUY' ? 'var(--up)' : 'var(--down)',
                 }}
               >
                 {t.side === 'BUY' ? '매수' : '매도'}
