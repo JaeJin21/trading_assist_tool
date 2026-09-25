@@ -5,9 +5,10 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default [
   { ignores: ['dist'] },
-  // 서버 코드는 Node 환경이다. (process 등이 브라우저 globals 로는 안 잡힌다)
+  // 서버 코드와 수집 스크립트는 Node 환경이다.
+  // (process 등이 브라우저 globals 로는 안 잡힌다)
   {
-    files: ['server/**/*.js'],
+    files: ['server/**/*.js', 'scripts/**/*.js'],
     languageOptions: { globals: globals.node },
   },
   {

@@ -6,6 +6,7 @@ import {
 } from 'lightweight-charts'
 import { pairTrades, summarize } from './pairTrades'
 import { getCandleAdapter } from './exchanges'
+import { loadHistory, historyCovers, sliceHistory } from './historyCandles'
 
 const API_BASE = 'http://localhost:3001'
 const SYMBOL = 'BTCUSDT'
@@ -18,9 +19,17 @@ const SPEEDS = [0.5, 1, 2, 5]
 const TRADE_INTERVAL = '1m'
 const PAD_MIN = 60 // 분
 
+// 저장해 둔 과거 캔들이 있을 때, 진입 시각 기준으로 얼마나 앞까지 그릴지.
+// 과거 매물대를 보려면 라이브 API 한 번치(1000봉)로는 모자라서 파일을 쓴다.
+const PAST_DAYS = 2
+
 // 재생 중 청산 지점을 지나고 몇 봉 더 간 뒤에 자동으로 멈출지.
 // 청산 직후 움직임까지 보고 멈추라고 여유를 준다.
 const STOP_TAIL = 5
+
+// 표 한 페이지에 보여줄 건수.
+const TRADES_PER_PAGE = 5
+const FILLS_PER_PAGE = 10
 
 const tableStyle = { borderCollapse: 'collapse', width: '100%', fontSize: 14 }
 const thStyle = {
@@ -85,6 +94,49 @@ function buildTradeMarkers(trade, candles) {
 
   // 마커는 시간 오름차순이어야 한다.
   return markers.sort((a, b) => a.time - b.time)
+}
+
+// 목록을 페이지 단위로 잘라 보여주기 위한 공용 훅.
+//
+// 나중에 캘린더로 기간을 고르게 되면, 필터링한 배열을 그대로 이 훅에 넘기면 된다.
+// items 배열이 바뀌면(= 기간을 다시 고르면) 자동으로 1페이지로 돌아간다.
+// 그래서 items 는 반드시 useMemo 로 감싸서 매 렌더마다 새로 만들지 않아야 한다.
+function usePagedList(items, perPage) {
+  const [page, setPage] = useState(0)
+  const [prevItems, setPrevItems] = useState(items)
+
+  // 목록 자체가 교체되면(새로 조회, 기간 필터 변경 등) 첫 페이지부터 다시 본다.
+  if (items !== prevItems) {
+    setPrevItems(items)
+    setPage(0)
+  }
+
+  const pageCount = Math.max(1, Math.ceil(items.length / perPage))
+  // 건수가 줄어 현재 페이지가 사라진 경우를 대비해 마지막 페이지로 붙인다.
+  const safePage = Math.min(page, pageCount - 1)
+  const pageItems = items.slice(safePage * perPage, safePage * perPage + perPage)
+
+  return { page: safePage, pageCount, pageItems, setPage }
+}
+
+// 표 아래에 붙는 페이지 이동 버튼.
+function Pager({ page, pageCount, onChange }) {
+  return (
+    <div style={{ marginTop: 8, fontSize: 13 }}>
+      <button onClick={() => onChange(page - 1)} disabled={page === 0}>
+        이전
+      </button>
+      <span style={{ margin: '0 8px' }}>
+        {page + 1} / {pageCount}
+      </span>
+      <button
+        onClick={() => onChange(page + 1)}
+        disabled={page >= pageCount - 1}
+      >
+        다음
+      </button>
+    </div>
+  )
 }
 
 function App() {
@@ -205,21 +257,40 @@ function App() {
     // 진입 앞뒤로 PAD_MIN 만큼 여유를 준다. 청산까지 한 화면에 들어오도록
     // 끝은 청산 시각 기준으로 잡고, 미청산이면 진입 시각 기준으로 잡는다.
     const pad = PAD_MIN * 60 * 1000
-    const startTime = trade.entryTime - pad
     const endTime = (trade.exitTime ?? trade.entryTime) + pad
+
+    // 저장 파일이 있으면 진입 전 PAST_DAYS 일치까지 거슬러 올라가 그린다.
+    // 없거나 구간을 못 덮으면 예전처럼 진입 -PAD_MIN 부터만 라이브로 받는다.
+    const pastStart = trade.entryTime - PAST_DAYS * 24 * 60 * 60 * 1000
+    const liveStart = trade.entryTime - pad
 
     setChartStatus('캔들 불러오는 중...')
     try {
-      const candles = await candleAdapter.fetchCandles(
-        {
-          symbol: trade.symbol,
-          interval: TRADE_INTERVAL,
-          startTime,
-          endTime,
-          limit: 1000, // 두 거래소 모두 1회 요청 최대치가 1000
-        },
-        controller.signal
+      const history = await loadHistory(
+        API_BASE,
+        config.exchange,
+        trade.symbol,
+        TRADE_INTERVAL
       )
+      const useHistory = historyCovers(history, pastStart / 1000, endTime / 1000)
+
+      const startTime = useHistory ? pastStart : liveStart
+      const candles = useHistory
+        ? sliceHistory(history, startTime / 1000, endTime / 1000)
+        : await candleAdapter.fetchCandles(
+            {
+              symbol: trade.symbol,
+              interval: TRADE_INTERVAL,
+              startTime,
+              endTime,
+              limit: 1000, // 두 거래소 모두 1회 요청 최대치가 1000
+            },
+            controller.signal
+          )
+
+      // 기다리는 사이에 다른 트레이드를 눌렀으면 이 응답은 버린다.
+      // (파일은 캐시에서 바로 오므로 라이브 요청보다 먼저 도착할 수 있다)
+      if (tradeLoadRef.current !== controller) return
 
       if (candles.length === 0) {
         setChartStatus('이 구간의 캔들이 없습니다.')
@@ -246,8 +317,9 @@ function App() {
       setSelectedTrade(trade)
 
       const range = `${new Date(startTime).toLocaleString()} ~ ${new Date(endTime).toLocaleString()}`
+      const source = useHistory ? `저장 데이터 (진입 전 ${PAST_DAYS}일)` : '라이브 API'
       setChartStatus(
-        `${trade.symbol} ${TRADE_INTERVAL} · ${range} (${candles.length}봉)`
+        `${trade.symbol} ${TRADE_INTERVAL} · ${range} (${candles.length}봉) · ${source}`
       )
     } catch (err) {
       if (err.name === 'AbortError') return
@@ -313,6 +385,28 @@ function App() {
   const pairedTrades = useMemo(() => pairTrades(trades), [trades])
   const stats = useMemo(() => summarize(pairedTrades), [pairedTrades])
 
+  // 두 표 모두 최신 건이 위로 오게 뒤집어서 보여준다.
+  // pairTrades 는 체결이 시간 오름차순이라고 전제하므로, 원본(trades)은 건드리지
+  // 않고 표시용 사본만 정렬한다.
+  //
+  // 기간(캘린더) 필터가 생기면 여기서 정렬 전에 걸러주면 된다. 아래 usePagedList 가
+  // 목록이 바뀐 걸 알아채고 1페이지로 돌려준다.
+  const tradesDesc = useMemo(
+    () =>
+      [...pairedTrades].sort(
+        // pairTrades 와 같은 기준(청산 시각, 미청산은 진입 시각)으로 내림차순.
+        (a, b) => (b.exitTime ?? b.entryTime) - (a.exitTime ?? a.entryTime)
+      ),
+    [pairedTrades]
+  )
+  const fillsDesc = useMemo(
+    () => [...trades].sort((a, b) => b.time - a.time),
+    [trades]
+  )
+
+  const tradePage = usePagedList(tradesDesc, TRADES_PER_PAGE)
+  const fillPage = usePagedList(fillsDesc, FILLS_PER_PAGE)
+
   return (
     <div style={{ padding: 16 }}>
       <h1 style={{ marginBottom: 4 }}>Trading Assist</h1>
@@ -368,7 +462,8 @@ function App() {
         (수수료 {stats.fee.toFixed(4)}){stats.open > 0 && ` · 미청산 ${stats.open}건`}
       </div>
       <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-        행을 클릭하면 그 트레이드의 진입 시각 전후 1분봉을 불러옵니다.
+        행을 클릭하면 그 트레이드의 진입 시각 전후 1분봉을 불러옵니다. 최신
+        트레이드가 위에 오고, 한 페이지에 {TRADES_PER_PAGE}건씩 보여줍니다.
       </div>
       <table style={tableStyle}>
         <thead>
@@ -393,7 +488,7 @@ function App() {
           </tr>
         </thead>
         <tbody>
-          {pairedTrades.map((t) => (
+          {tradePage.pageItems.map((t) => (
             <tr
               key={t.id}
               onClick={() => handleSelectTrade(t)}
@@ -434,8 +529,16 @@ function App() {
           ))}
         </tbody>
       </table>
+      <Pager
+        page={tradePage.page}
+        pageCount={tradePage.pageCount}
+        onChange={tradePage.setPage}
+      />
 
       <h2 style={{ marginTop: 24 }}>체결 내역 ({trades.length})</h2>
+      <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+        최신 체결이 위에 옵니다. 한 페이지에 {FILLS_PER_PAGE}건씩 보여줍니다.
+      </div>
       <table style={tableStyle}>
         <thead>
           <tr>
@@ -447,7 +550,7 @@ function App() {
           </tr>
         </thead>
         <tbody>
-          {trades.map((t) => (
+          {fillPage.pageItems.map((t) => (
             <tr key={t.id}>
               <td style={tdStyle}>{new Date(t.time).toLocaleString()}</td>
               <td style={tdStyle}>{t.symbol}</td>
@@ -465,6 +568,11 @@ function App() {
           ))}
         </tbody>
       </table>
+      <Pager
+        page={fillPage.page}
+        pageCount={fillPage.pageCount}
+        onChange={fillPage.setPage}
+      />
     </div>
   )
 }

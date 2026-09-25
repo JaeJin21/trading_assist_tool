@@ -4,6 +4,10 @@ import 'dotenv/config'
 // 웹 서버 프레임워크.
 import express from 'express'
 
+// 받아둔 캔들 파일 경로를 잡는 데 쓴다.
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 // 거래소 어댑터. 거래소별 차이(서명, 엔드포인트, 응답 형식)는 전부 여기 안에 있다.
 import { createExchange, EXCHANGE_IDS } from './exchanges/index.js'
 
@@ -14,6 +18,16 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*')
   next()
 })
+
+// 미리 받아둔 과거 캔들 파일(scripts/fetchCandles.js 가 만든 data/*.json)을
+// 프론트가 그대로 읽어갈 수 있게 정적으로 내려준다.
+// 라이브 API 는 1회 1000봉이 최대라, 진입 전 며칠치는 이 파일에서 가져온다.
+const DATA_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'data'
+)
+app.use('/data', express.static(DATA_DIR))
 
 // 어느 거래소를 쓸지. .env 의 EXCHANGE 로 전환하고, 기본값은 binance.
 const EXCHANGE_ID = process.env.EXCHANGE || 'binance'
