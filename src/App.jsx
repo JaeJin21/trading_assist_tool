@@ -8,6 +8,8 @@ import { pairTrades, summarize } from './pairTrades'
 import { getCandleAdapter } from './exchanges'
 import { loadHistory, historyCovers, sliceHistory } from './historyCandles'
 import { aggregateCandles } from './aggregateCandles'
+import { fmtHold, fmtPnl, fmtShort, pnlColor } from './format'
+import TradeDetail from './TradeDetail'
 
 const API_BASE = 'http://localhost:3001'
 
@@ -103,19 +105,8 @@ const thStyle = {
 }
 const tdStyle = { padding: '6px 8px', whiteSpace: 'nowrap' }
 
-// 손익 색: 이익은 파랑, 손실은 빨강, 0 은 기본색.
-const pnlColor = (v) =>
-  v > 0 ? 'var(--up)' : v < 0 ? 'var(--down)' : 'var(--text)'
-
-// 부호를 항상 붙여서 표시. (+12.34 / -5.60)
-const fmtPnl = (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`
-
-// 보유 시간(ms) -> "2h 30m" 형태.
-function fmtHold(ms) {
-  const min = Math.round(ms / 60000)
-  const h = Math.floor(min / 60)
-  return h > 0 ? `${h}h ${min % 60}m` : `${min}m`
-}
+// 손익 색 / 숫자 / 시간 포맷은 format.js 에 있다.
+// (오른쪽 상세 패널이 같은 함수를 써서 목록과 표기가 어긋나지 않게)
 
 // 어떤 시각(ms)이 속한 캔들의 time(초)을 찾는다.
 // 마커는 실제 캔들 위에 찍혀야 해서, 체결 시각을 그 시각이 포함된 봉으로 스냅한다.
@@ -222,6 +213,8 @@ function App() {
   const [config, setConfig] = useState(null) // 백엔드 /config (어느 거래소인지)
   const [replayInterval, setReplayInterval] = useState('1m') // 복기 차트 봉 단위
   const [theme, setTheme] = useState(readSavedTheme) // 'dark' | 'light'
+  // 체결 내역 표는 원본 확인용이라 기본은 접어 둔다. (차트 공간 확보)
+  const [fillsOpen, setFillsOpen] = useState(false)
   // 선택한 트레이드의 원본 1분봉. 봉 단위를 바꿀 때 이걸 다시 묶기만 한다.
   const replaySourceRef = useRef({ trade: null, base: [], range: '', source: '' })
 
@@ -508,14 +501,8 @@ function App() {
   const fillPage = usePagedList(fillsDesc, FILLS_PER_PAGE)
 
   return (
-    <div style={{ padding: 16 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
+    <div className="page">
+      <div className="page-head">
         <h1 style={{ marginBottom: 4 }}>Trading Assist</h1>
         <button
           onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
@@ -524,188 +511,190 @@ function App() {
           {theme === 'dark' ? '라이트 모드' : '다크 모드'}
         </button>
       </div>
-      <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 12 }}>
+      <div className="dim" style={{ marginBottom: 12 }}>
         {config
           ? `${config.label} · ${config.useMock ? '목데이터' : '실거래 데이터'}`
           : '거래소 확인 중...'}
       </div>
-      <div style={{ marginBottom: 8 }}>
-        <button onClick={() => setPlaying((p) => !p)} disabled={!hasMore}>
-          {playing ? '일시정지' : '재생'}
-        </button>
-        <button
-          onClick={handleNext}
-          disabled={!hasMore || playing}
-          style={{ marginLeft: 8 }}
-        >
-          다음
-        </button>
-        <span style={{ marginLeft: 8 }}>
-          {cursor} / {total}
-        </span>
-      </div>
-      <div style={{ marginBottom: 8 }}>
-        <span style={{ marginRight: 8 }}>속도:</span>
-        {SPEEDS.map((s) => (
-          <button
-            key={s}
-            onClick={() => setSpeed(s)}
-            style={{
-              marginRight: 4,
-              fontWeight: speed === s ? 'bold' : 'normal',
-            }}
-          >
-            {s}x
-          </button>
-        ))}
-      </div>
-      <div style={{ marginBottom: 8 }}>
-        <span style={{ marginRight: 8 }}>봉:</span>
-        {REPLAY_INTERVALS.map((iv) => (
-          <button
-            key={iv}
-            onClick={() => handleIntervalChange(iv)}
-            disabled={!selectedTrade}
-            style={{
-              marginRight: 4,
-              fontWeight: replayInterval === iv ? 'bold' : 'normal',
-            }}
-          >
-            {iv}
-          </button>
-        ))}
-      </div>
-      {chartStatus && (
-        <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 8 }}>
-          {chartStatus}
-        </div>
-      )}
-      <div ref={containerRef} style={{ width: '100%' }} />
 
-      <h2 style={{ marginTop: 24 }}>트레이드 ({pairedTrades.length})</h2>
-      <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 8 }}>
-        청산 {stats.closed}건 · 승 {stats.wins} / 패 {stats.losses} · 승률{' '}
-        {stats.winRate.toFixed(1)}% · 순손익{' '}
-        <strong style={{ color: pnlColor(stats.netPnl) }}>
-          {fmtPnl(stats.netPnl)} USDT
-        </strong>{' '}
-        (수수료 {stats.fee.toFixed(4)}){stats.open > 0 && ` · 미청산 ${stats.open}건`}
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 8 }}>
-        행을 클릭하면 그 트레이드의 진입 시각 전후 1분봉을 불러옵니다. 최신
-        트레이드가 위에 오고, 한 페이지에 {TRADES_PER_PAGE}건씩 보여줍니다.
-      </div>
-      <table style={tableStyle}>
-        <thead>
-          <tr>
-            {[
-              '심볼',
-              '방향',
-              '수량',
-              '진입가',
-              '청산가',
-              '진입 시각',
-              '청산 시각',
-              '보유',
-              '손익',
-              '수익률',
-              '체결수',
-            ].map((h) => (
-              <th key={h} style={thStyle}>
-                {h}
-              </th>
+      {/* 3단: 목록 / 차트 / 상세. 칸 너비는 index.css 의 .layout 에서 정한다. */}
+      <div className="layout">
+        {/* ── 왼쪽: 트레이드 목록 ──
+            좁은 칸이라 표가 아니라 두 줄 카드로 보여준다. 나머지 항목(진입가,
+            청산가, 수수료 등)은 오른쪽 상세 패널에 있다. */}
+        <section className="col">
+          <h2>트레이드 ({pairedTrades.length})</h2>
+          <div className="dim">
+            청산 {stats.closed}건 · 승 {stats.wins} / 패 {stats.losses} · 승률{' '}
+            {stats.winRate.toFixed(1)}%
+          </div>
+          <div className="dim">
+            순손익{' '}
+            <strong style={{ color: pnlColor(stats.netPnl) }}>
+              {fmtPnl(stats.netPnl)} USDT
+            </strong>{' '}
+            (수수료 {stats.fee.toFixed(4)})
+            {stats.open > 0 && ` · 미청산 ${stats.open}건`}
+          </div>
+          <div className="faint" style={{ marginTop: 6 }}>
+            한 건을 누르면 그 시점 캔들을 불러옵니다. 최신순으로 {TRADES_PER_PAGE}건씩.
+          </div>
+          <ul className="trade-list">
+            {tradePage.pageItems.map((t) => (
+              <li key={t.id}>
+                <button
+                  className={`trade-item${t.id === selectedTrade?.id ? ' is-selected' : ''}`}
+                  onClick={() => handleSelectTrade(t)}
+                >
+                  <span className="trade-item-top">
+                    <span
+                      style={{
+                        color: t.direction === 'LONG' ? 'var(--up)' : 'var(--down)',
+                      }}
+                    >
+                      {t.direction === 'LONG' ? '롱' : '숏'}
+                    </span>
+                    <span>{t.symbol}</span>
+                    <span className="push" style={{ color: pnlColor(t.netPnl) }}>
+                      {t.open ? '미청산' : fmtPnl(t.netPnl)}
+                    </span>
+                  </span>
+                  <span className="trade-item-bottom">
+                    <span>{fmtShort(t.entryTime)}</span>
+                    <span>{t.open ? '' : fmtHold(t.holdMs)}</span>
+                    <span className="push" style={{ color: pnlColor(t.netPnl) }}>
+                      {t.open ? '' : `${fmtPnl(t.pnlPct)}%`}
+                    </span>
+                  </span>
+                </button>
+              </li>
             ))}
-          </tr>
-        </thead>
-        <tbody>
-          {tradePage.pageItems.map((t) => (
-            <tr
-              key={t.id}
-              onClick={() => handleSelectTrade(t)}
-              style={{
-                cursor: 'pointer',
-                background:
-                  t.id === selectedTrade?.id
-                    ? 'var(--row-selected)'
-                    : 'transparent',
-              }}
+          </ul>
+          <Pager
+            page={tradePage.page}
+            pageCount={tradePage.pageCount}
+            onChange={tradePage.setPage}
+          />
+        </section>
+
+        {/* ── 가운데: 차트 + 리플레이 컨트롤 (가장 넓은 칸) ── */}
+        <section className="col">
+          <div style={{ marginBottom: 8 }}>
+            <button onClick={() => setPlaying((p) => !p)} disabled={!hasMore}>
+              {playing ? '일시정지' : '재생'}
+            </button>
+            <button
+              onClick={handleNext}
+              disabled={!hasMore || playing}
+              style={{ marginLeft: 8 }}
             >
-              <td style={tdStyle}>{t.symbol}</td>
-              <td
+              다음
+            </button>
+            <span style={{ marginLeft: 8 }}>
+              {cursor} / {total}
+            </span>
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ marginRight: 8 }}>속도:</span>
+            {SPEEDS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setSpeed(s)}
                 style={{
-                  ...tdStyle,
-                  color: t.direction === 'LONG' ? 'var(--up)' : 'var(--down)',
+                  marginRight: 4,
+                  fontWeight: speed === s ? 'bold' : 'normal',
                 }}
               >
-                {t.direction === 'LONG' ? '롱' : '숏'}
-              </td>
-              <td style={tdStyle}>{t.qty}</td>
-              <td style={tdStyle}>{t.entryPrice.toFixed(2)}</td>
-              <td style={tdStyle}>{t.open ? '-' : t.exitPrice.toFixed(2)}</td>
-              <td style={tdStyle}>{new Date(t.entryTime).toLocaleString()}</td>
-              <td style={tdStyle}>
-                {t.open ? (
-                  <span style={{ color: 'var(--text-faint)' }}>미청산</span>
-                ) : (
-                  new Date(t.exitTime).toLocaleString()
-                )}
-              </td>
-              <td style={tdStyle}>{t.open ? '-' : fmtHold(t.holdMs)}</td>
-              <td style={{ ...tdStyle, color: pnlColor(t.netPnl) }}>
-                {t.open ? '-' : fmtPnl(t.netPnl)}
-              </td>
-              <td style={{ ...tdStyle, color: pnlColor(t.netPnl) }}>
-                {t.open ? '-' : `${fmtPnl(t.pnlPct)}%`}
-              </td>
-              <td style={tdStyle}>{t.fillCount}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <Pager
-        page={tradePage.page}
-        pageCount={tradePage.pageCount}
-        onChange={tradePage.setPage}
-      />
-
-      <h2 style={{ marginTop: 24 }}>체결 내역 ({trades.length})</h2>
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 8 }}>
-        최신 체결이 위에 옵니다. 한 페이지에 {FILLS_PER_PAGE}건씩 보여줍니다.
-      </div>
-      <table style={tableStyle}>
-        <thead>
-          <tr>
-            {['시각', '심볼', '방향', '가격', '수량'].map((h) => (
-              <th key={h} style={thStyle}>
-                {h}
-              </th>
+                {s}x
+              </button>
             ))}
-          </tr>
-        </thead>
-        <tbody>
-          {fillPage.pageItems.map((t) => (
-            <tr key={t.id}>
-              <td style={tdStyle}>{new Date(t.time).toLocaleString()}</td>
-              <td style={tdStyle}>{t.symbol}</td>
-              <td
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ marginRight: 8 }}>봉:</span>
+            {REPLAY_INTERVALS.map((iv) => (
+              <button
+                key={iv}
+                onClick={() => handleIntervalChange(iv)}
+                disabled={!selectedTrade}
                 style={{
-                  ...tdStyle,
-                  color: t.side === 'BUY' ? 'var(--up)' : 'var(--down)',
+                  marginRight: 4,
+                  fontWeight: replayInterval === iv ? 'bold' : 'normal',
                 }}
               >
-                {t.side === 'BUY' ? '매수' : '매도'}
-              </td>
-              <td style={tdStyle}>{t.price}</td>
-              <td style={tdStyle}>{t.qty}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <Pager
-        page={fillPage.page}
-        pageCount={fillPage.pageCount}
-        onChange={fillPage.setPage}
-      />
+                {iv}
+              </button>
+            ))}
+          </div>
+          {chartStatus && (
+            <div className="dim" style={{ marginBottom: 8 }}>
+              {chartStatus}
+            </div>
+          )}
+          <div ref={containerRef} style={{ width: '100%' }} />
+        </section>
+
+        {/* ── 오른쪽: 고른 트레이드의 상세 + 복기 메모 ──
+            key 를 주면 트레이드가 바뀔 때 패널이 새로 만들어져서, 그 트레이드에
+            저장된 메모로 다시 시작한다. (TradeDetail 이 이걸 전제로 한다) */}
+        <aside className="col">
+          {selectedTrade ? (
+            <TradeDetail key={selectedTrade.id} trade={selectedTrade} />
+          ) : (
+            <div className="panel dim">
+              왼쪽에서 트레이드를 고르면 상세와 복기 메모(메모 · 태그 · 감정)가
+              여기 나옵니다.
+            </div>
+          )}
+        </aside>
+      </div>
+
+      {/* ── 아래: 원본 확인용 체결 내역. 기본은 접힘. ── */}
+      <section className="fills">
+        <button onClick={() => setFillsOpen((v) => !v)}>
+          {fillsOpen ? '▾' : '▸'} 체결 내역 ({trades.length})
+        </button>
+        {fillsOpen && (
+          <>
+            <div className="faint" style={{ margin: '8px 0' }}>
+              최신 체결이 위에 옵니다. 한 페이지에 {FILLS_PER_PAGE}건씩 보여줍니다.
+            </div>
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  {['시각', '심볼', '방향', '가격', '수량'].map((h) => (
+                    <th key={h} style={thStyle}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {fillPage.pageItems.map((t) => (
+                  <tr key={t.id}>
+                    <td style={tdStyle}>{new Date(t.time).toLocaleString()}</td>
+                    <td style={tdStyle}>{t.symbol}</td>
+                    <td
+                      style={{
+                        ...tdStyle,
+                        color: t.side === 'BUY' ? 'var(--up)' : 'var(--down)',
+                      }}
+                    >
+                      {t.side === 'BUY' ? '매수' : '매도'}
+                    </td>
+                    <td style={tdStyle}>{t.price}</td>
+                    <td style={tdStyle}>{t.qty}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Pager
+              page={fillPage.page}
+              pageCount={fillPage.pageCount}
+              onChange={fillPage.setPage}
+            />
+          </>
+        )}
+      </section>
     </div>
   )
 }

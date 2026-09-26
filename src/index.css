@@ -28,6 +28,12 @@
   --btn-border: #39404b;
   --btn-text: #e4e7eb;
 
+  /* 패널 / 입력칸 / 태그 */
+  --panel-bg: #1a1e25;
+  --input-bg: #10131a;
+  --chip-bg: #232830;
+  --chip-on-bg: #223049;
+
   /* 차트 (캔버스라 CSS 가 직접 먹지 않는다. App.jsx 가 읽어서 넘긴다) */
   --chart-bg: #14171c;
   --chart-text: #9099a5;
@@ -51,6 +57,11 @@
   --btn-bg: #f2f2f2;
   --btn-border: #c9c9c9;
   --btn-text: #213547;
+
+  --panel-bg: #fafafa;
+  --input-bg: #ffffff;
+  --chip-bg: #f0f0f0;
+  --chip-on-bg: #dce8ff;
 
   --chart-bg: #ffffff;
   --chart-text: #333333;
@@ -84,4 +95,240 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* ── 3단 레이아웃 ───────────────────────────────────────────────────────────
+ * 왼쪽 트레이드 목록 / 가운데 차트+리플레이(가장 넓게) / 오른쪽 상세+메모.
+ * 가운데를 minmax(0, ...) 로 둬야 차트 캔버스가 칸을 넘어가지 않는다.
+ * 좁은 화면(<=1200px)에서는 한 줄로 쌓는다. */
+.page {
+  padding: 16px;
+}
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 2.6fr) minmax(280px, 1.1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1200px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.col h2 {
+  font-size: 18px;
+  margin: 0 0 6px;
+}
+
+.dim {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.faint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ── 왼쪽: 트레이드 목록 ─────────────────────────────────────────────────── */
+/* 좁은 칸에 표를 넣을 수 없어서 한 건을 두 줄 카드로 보여준다.
+ * 나머지 항목(진입가/청산가/수수료 등)은 오른쪽 상세 패널에 있다. */
+.trade-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.trade-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+}
+
+.trade-item.is-selected {
+  background: var(--row-selected);
+  border-color: var(--up);
+}
+
+.trade-item-top,
+.trade-item-bottom {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.trade-item-top {
+  font-weight: 600;
+}
+
+/* 손익은 오른쪽 끝에 붙인다. */
+.trade-item-top .push,
+.trade-item-bottom .push {
+  margin-left: auto;
+}
+
+.trade-item-bottom {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+/* ── 오른쪽: 상세 + 복기 메모 ───────────────────────────────────────────── */
+.panel {
+  padding: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.panel-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 15px;
+}
+
+.panel-pnl {
+  margin-top: 2px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.panel-pnl-pct {
+  margin-left: 6px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.panel-title {
+  font-size: 14px;
+  margin: 14px 0 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* 라벨-값 2열. 값이 길면(시각) 줄바꿈 없이 그대로 둔다. */
+.detail-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
+.detail-list dt {
+  color: var(--text-dim);
+}
+
+.detail-list dd {
+  margin: 0;
+  text-align: right;
+}
+
+.field {
+  margin-bottom: 12px;
+}
+
+.field-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+/* 감정 버튼과 태그가 같은 모양(칩)을 쓴다. 고른 것은 .is-on. */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--btn-border);
+  background: var(--chip-bg);
+  color: var(--text);
+}
+
+.chip.is-on {
+  background: var(--chip-on-bg);
+  border-color: var(--up);
+}
+
+.chip-preset {
+  color: var(--text-dim);
+}
+
+/* 태그 칩 안의 × 버튼. 칩 테두리를 다시 그리지 않는다. */
+.chip-x {
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+}
+
+.chip-x:hover:not(:disabled) {
+  color: var(--down);
+  border-color: transparent;
+}
+
+.tag-input {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.tag-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+input,
+textarea {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--btn-border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--up);
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+/* ── 아래: 접히는 체결 내역 ─────────────────────────────────────────────── */
+.fills {
+  margin-top: 20px;
 }
