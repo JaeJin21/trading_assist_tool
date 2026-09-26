@@ -24,9 +24,18 @@ npm run dev                   # Vite
 검증용 명령:
 
 ```bash
-npm run lint                  # eslint (src + server 둘 다)
+npm run lint                  # eslint (src + server + scripts 전부)
 npm run build                 # vite build (문법 확인용, dist는 커밋 안 함)
 ```
+
+복기용 과거 캔들 파일 받기 (없어도 라이브 API로 동작한다):
+
+```bash
+node scripts/fetchCandles.js                       # 바이비트 BTCUSDT 1분봉 최근 30일
+node scripts/fetchCandles.js --symbol ETHUSDT --interval 5m --days 90
+```
+
+`data/` 는 커밋하지 않는다. 이 스크립트로 언제든 다시 받는다.
 
 ## 거래소 전환
 
@@ -44,19 +53,26 @@ npm run build                 # vite build (문법 확인용, dist는 커밋 안
 ```
 src/
   App.jsx          프론트 전체 (차트 + 트레이드 표 + 체결 표). 아직 단일 컴포넌트.
+  index.css        테마 색 CSS 변수 한 곳 (다크 기본, data-theme='light' 로 덮어씀)
   pairTrades.js    체결 → 트레이드 페어링 로직 (순수 함수, 거래소/UI 무관)
+  aggregateCandles.js  1분봉 → 상위 봉 집계 (순수 함수, 거래소/저장소 무관)
+  historyCandles.js    받아둔 캔들 파일 로딩 + 구간 자르기 (파일 단위 캐시)
   exchanges/       거래소별 캔들 조회 어댑터
     index.js       레지스트리 + 인터페이스 문서
     binance.js     /api/v3/klines
     bybit.js       /v5/market/kline
 server/
-  index.js         Express 서버. 어댑터를 골라 쓰기만 한다 (거래소 지식 없음)
+  index.js         Express 서버. 어댑터를 골라 쓰기만 한다 (거래소 지식 없음).
+                   data/ 를 /data 로 정적 서빙하는 것도 여기.
   exchanges/       거래소별 체결 조회 + 서명 + 응답 정규화 어댑터
     index.js       레지스트리 + 공통 체결 형식 정의
     binance.js     /fapi/v1/userTrades, 쿼리 서명
     bybit.js       /v5/execution/list, 헤더 서명
   mockTrades.js    가짜 왕복 정의(ROUND_TRIPS) + 바이낸스 형식 생성기
   .env             EXCHANGE / API 키 / USE_MOCK (git 제외, .env.example 참고)
+scripts/
+  fetchCandles.js  바이비트 공개 캔들을 페이지로 받아 data/*.json 으로 저장
+data/              받아둔 캔들. 파일명 `{거래소}-{심볼}-{봉}.json` (git 제외)
 ```
 
 ### 어댑터 경계 (이 구조의 핵심)
@@ -79,7 +95,8 @@ server/
 
 **공통 캔들 형식**: `{ time /* 초 */, open, high, low, close }`, 시간 오름차순.
 봉 단위는 거래소 표기가 아니라 공통 토큰 `'1m' | '5m' | '1h'` 을 넘기고,
-변환은 각 어댑터가 한다.
+변환은 각 어댑터가 한다. 복기 차트의 15m/30m/4h 는 어댑터로 받는 게 아니라
+받아둔 1분봉을 집계해서 만든다(아래 "과거 캔들" 참고).
 
 새 거래소를 붙이려면: 어댑터 파일 2개(서버/프론트) + 각 `exchanges/index.js`의
 레지스트리에 한 줄. 다른 곳은 건드릴 필요 없다.
@@ -113,10 +130,31 @@ server/
 - SELL로 시작하면 자동으로 `SHORT`
 - 끝까지 안 닫힌 포지션은 `open: true` (표에 "미청산")
 
-트레이드 객체: `symbol, direction, open, qty, entryPrice, exitPrice, entryTime,
+트레이드 객체: `id, symbol, direction, open, qty, entryPrice, exitPrice, entryTime,
 exitTime, holdMs, grossPnl, fee, netPnl, pnlPct, fillCount, fills`.
 가격은 수량가중 평균. 손익은 `realizedPnl` 합계 우선, 없으면 평균가로 계산.
 `netPnl`은 수수료 차감 후. `summarize(trades)`는 승/패·승률·순손익 요약.
+
+### 과거 캔들: 파일 + 집계 (`historyCandles.js`, `aggregateCandles.js`)
+
+진입 전 며칠치 매물대를 보려면 라이브 API 한 번치(두 거래소 모두 최대 1000봉)로는
+모자란다. 그래서 1분봉을 미리 파일로 받아 두고, 필요한 구간만 잘라 쓴다.
+
+- `scripts/fetchCandles.js` — 바이비트 `/v5/market/kline`(공개, 인증 불필요)을
+  1000봉씩 페이지로 받아 `data/{거래소}-{심볼}-{봉}.json` 으로 저장한다.
+  바이비트는 `start`+`end` 를 주면 **end 쪽 최신 1000봉**을 주므로 루프가 과거
+  방향으로 거슬러 올라간다. 미종가봉은 버리고, 빠진 봉은 개수만 알려 준다.
+- `loadHistory(apiBase, exchange, symbol, interval)` — 백엔드 `/data` 에서 파일을
+  받아 `{ candles, first, last }`. 파일이 없으면 `null` 이고, 그러면 호출하는 쪽이
+  라이브 API 로 폴백한다. 같은 파일을 두 번 받지 않도록 Promise 를 캐시한다.
+- `historyCovers` / `sliceHistory` — 요청 구간이 파일 안에 통째로 들어오는지 보고,
+  들어오면 이진탐색으로 그 구간만 잘라낸다. (4만봉을 매번 훑지 않는다)
+- `aggregateCandles(candles, interval)` — 1분봉을 5m/15m/30m/1h/4h 로 묶는 순수
+  함수. 파일이든 라이브 응답이든 공통 캔들 형식이면 그대로 쓴다. 봉 경계는 epoch
+  기준이라 거래소 상위 봉과 같다(1h=매시 00분, 4h=UTC 00/04/08…). 바이비트 실제
+  상위 봉과 979봉 대조해 값이 일치하는 것을 확인했다. 1주/1달은 길이가 일정하지
+  않아 넣지 않았다(거래소에서 직접 받을 것). **입력 양끝은 구간이 덜 찬 봉일 수
+  있다** — 거래소 값과 대조할 때는 양끝을 빼고 본다.
 
 ### 프론트 (`src/App.jsx`)
 
@@ -126,24 +164,57 @@ exitTime, holdMs, grossPnl, fee, netPnl, pnlPct, fillCount, fills`.
   `series.update()`로 한 개씩 추가. 재생은 `setInterval(BASE_INTERVAL / speed)`.
   **데이터 무관 구조**라 캔들을 갈아끼워도 그대로 동작한다.
 - 시작 화면은 1시간봉 100개, 앞 20개만 그려둔 상태.
-- **트레이드 행 클릭** → `handleSelectTrade()`: 진입 −60분 ~ 청산 +60분 구간의
-  **1분봉**(`TRADE_INTERVAL`)을 어댑터로 불러와 교체. 진입 봉까지 그려두고 대기.
-  이전 요청은 `AbortController`로 취소.
+- **트레이드 행 클릭** → `handleSelectTrade()`: 그 트레이드 구간의 **1분봉**
+  (`TRADE_INTERVAL`)을 불러와 교체하고, 진입 봉까지 그려두고 대기한다. 저장 파일이
+  구간을 덮으면 진입 전 `PAST_DAYS`(2일)부터 파일에서 잘라 쓰고, 못 덮으면 진입
+  −`PAD_MIN`(60분)부터만 라이브 어댑터로 받는다. 끝은 청산 +60분(미청산이면 진입
+  +60분). 어느 쪽에서 받았는지는 차트 위 상태줄에 적힌다. 이전 요청은
+  `AbortController`로 취소하고, 파일은 캐시에서 라이브보다 먼저 도착할 수 있어
+  `tradeLoadRef` 로 "지금도 최신 요청인지"를 한 번 더 확인한다.
+- **봉 단위 버튼**(1m/5m/15m/30m/1h/4h) → `handleIntervalChange()`: 원본 1분봉을
+  `replaySourceRef` 에 들고 있다가 `aggregateCandles` 로 다시 묶기만 한다.
+  **네트워크 요청이 없다.** 봉이 바뀌면 진입 봉을 다시 찾아 거기서 시작하고
+  마커도 바뀐 봉에 맞춰 다시 그린다. 트레이드를 고르기 전에는 비활성이다.
 - **자동 정지**: `stopIndexRef` = 청산 봉 + `STOP_TAIL`(5봉). 재생이 여기 닿으면
   한 번 멈춘다. 정지 후 다시 재생을 누르면 남은 구간을 끝까지 볼 수 있다.
 - **마커**: 선택한 트레이드의 실제 진입/청산 시각·가격. 체결 시각을 그 시각이
   포함된 봉으로 내림 스냅한다(마커는 실제 캔들 위에만 찍힌다). 아직 안 그려진
   캔들의 마커는 숨기므로, 청산 마커는 재생이 청산 시점에 닿아야 나타난다.
+- **표 페이지 나누기**: 두 표 모두 최신 건이 위로 오고, `usePagedList` 훅 +
+  `Pager` 컴포넌트로 트레이드 5건(`TRADES_PER_PAGE`) / 체결 10건
+  (`FILLS_PER_PAGE`)씩 보여준다. 목록 배열이 교체되면 1페이지로 돌아가므로, 훅에
+  넘기는 배열은 반드시 `useMemo` 로 감싼다. (기간 캘린더가 생기면 걸러낸 배열을
+  그대로 훅에 넘기면 된다)
 
-렌더링 순서: 헤더(거래소 표시) → 차트 → 트레이드 표 → 체결 내역 표(원본 확인용).
+렌더링 순서: 헤더(거래소 표시 + 테마 토글) → 재생/속도/봉 단위 버튼 → 상태줄 →
+차트 → 트레이드 표 → 체결 내역 표(원본 확인용).
 스타일은 파일 상단 `tableStyle`/`thStyle`/`tdStyle` 상수를 공유.
-색 규칙: 이익·매수·롱 = 파랑 `#2196f3`, 손실·매도·숏 = 빨강 `#e91e63`.
+색 규칙: 이익·매수·롱 = 파랑 `var(--up)`, 손실·매도·숏 = 빨강 `var(--down)`.
+
+### 테마 (`src/index.css`)
+
+색은 전부 `index.css` 의 CSS 변수에 모여 있다. `:root` 가 다크(기본)이고
+`:root[data-theme='light']` 가 라이트로 덮어쓴다. 색 조정은 이 파일만 고치면 된다.
+`--up`/`--down` 은 두 테마에서 같은 값이다(프로젝트 색 규칙). 선택은
+`localStorage`(`trading-assist-theme`)에 기억하고, `data-theme` 은
+`useLayoutEffect` 로 붙인다 — 첫 페인트 전에 붙어야 라이트로 저장해 둔 경우
+다크가 깜빡이지 않는다.
+
+차트는 캔버스라 CSS 변수가 저절로 안 먹는다. `cssVar()` 로 값을 읽어 배경/격자선/
+축 글자/봉 색/마커 색을 옵션으로 넘기고, 테마가 바뀌면 `applyOptions` 로 다시
+적용한다. `cssVar()` 가 빈 값을 읽으면 다크 기본값(`FALLBACK_COLORS`)으로
+떨어뜨리고 경고를 남긴다 — 빈 문자열을 그대로 넘기면 캔버스가 무효한 색을 무시하고
+검정을 써서 배경도 봉도 검정이 되어 아무것도 안 보인다. (실제로 겪은 증상)
 
 ## 현재 상태
 
 목데이터 기준 12체결 → 6트레이드, 승률 50%, 순손익 +25.72 USDT.
 **두 거래소 어댑터가 완전히 같은 결과**를 낸다(어댑터 리팩터링 전후로 값 동일).
 캔들 어댑터도 양쪽 실제 API로 검증했다(120봉, 오름차순, 형식 일치).
+
+복기 차트는 저장해 둔 1분봉으로 진입 전 2일까지 거슬러 보고, 봉 단위를 1m~4h 로
+바꿔 볼 수 있다. 다크/라이트 토글이 있고 기본은 다크다. `fetchCandles.js` 기본값
+(BTCUSDT 1분봉 30일)이면 파일이 약 43,000봉 / 3.4MB 다.
 
 ### 알려진 미완성 / 주의점
 
@@ -153,8 +224,17 @@ exitTime, holdMs, grossPnl, fee, netPnl, pnlPct, fillCount, fills`.
   고치려면 해당 시각의 실제 캔들 가격을 진입가/청산가로 쓰게 하면 된다.
 - **바이낸스 캔들은 현물(`api.binance.com`), 체결은 선물(`fapi`)이다.** Phase 0부터
   이어진 불일치. 가격이 미세하게 다르다. 바이비트는 양쪽 다 `linear`(무기한).
-- 봉 단위가 1분 고정. 1분/5분/1시간 전환 UI는 없음 (`TRADE_INTERVAL` 상수,
-  어댑터는 이미 3종을 지원).
+- **저장 캔들 파일은 바이비트 것만 받는다.** `fetchCandles.js` 가 바이비트 전용이라
+  `EXCHANGE=binance` 로 돌리면 `binance-BTCUSDT-1m.json` 을 찾다가 없어서 항상
+  라이브 폴백(진입 전 60분만)이 된다. 바이낸스 파일이 필요하면 스크립트에 어댑터를
+  하나 더 붙여야 한다.
+- 파일 범위(기본 최근 30일)를 벗어난 트레이드도 조용히 라이브 폴백으로 떨어진다.
+  상태줄의 "저장 데이터 / 라이브 API" 표시로만 구분된다.
+- 캔들 파일을 프론트가 통째로 `fetch` 해서 메모리에 들고 있다(3.4MB). 받는 기간을
+  늘리면 그만큼 커진다.
+- 집계한 상위 봉의 **양끝은 덜 찬 봉일 수 있다**(파일/요청 구간이 봉 경계에 딱
+  맞지 않을 때). 라이브 조회용 어댑터는 `1m/5m/1h` 만 매핑한다 — 15m/30m/4h 는
+  집계로만 만든다.
 - 수익률(%)은 **레버리지 미반영**.
 - `/trades`는 심볼당 최근 50건(바이비트는 최대 100). 조회 구간 시작 시점에 이미
   열려 있던 포지션은 진입 체결이 잘려 "청산만 있는 트레이드"로 잘못 묶일 수 있다.
