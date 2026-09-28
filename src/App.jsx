@@ -44,6 +44,18 @@ const STOP_TAIL = 5
 const TRADES_PER_PAGE = 5
 const FILLS_PER_PAGE = 10
 
+// 체결 내역을 다시 받아오는 주기. 복기 도구라 실시간까지는 필요 없어서
+// 웹소켓 대신 주기 조회로 한다.
+const TRADES_REFRESH_MS = 30 * 1000
+
+// 새로 받은 체결 목록이 지금 것과 같은지. 체결 id 만 비교한다.
+// 같으면 목록 배열을 갈아끼우지 않는다 — 갈아끼우면 페이지가 1쪽으로 돌아가고
+// 트레이드 객체가 전부 새로 만들어지기 때문이다.
+// (목데이터는 부를 때마다 시각이 현재 기준으로 밀리지만 id 는 고정이라 같게 본다)
+function sameFills(a, b) {
+  return a.length === b.length && a.every((f, i) => f.id === b[i].id)
+}
+
 // 테마 색은 index.css 의 CSS 변수 한 곳에 모여 있다.
 // 캔버스로 그리는 차트/마커는 CSS 를 못 읽으므로 여기서 값을 꺼내 넘긴다.
 //
@@ -208,6 +220,9 @@ function App() {
   const [playing, setPlaying] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [trades, setTrades] = useState([]) // 백엔드 /trades 응답
+  const [tradesUpdatedAt, setTradesUpdatedAt] = useState(null) // 마지막으로 받아온 시각(ms)
+  const [tradesLoading, setTradesLoading] = useState(false) // /trades 요청 중인지
+  const [tradesError, setTradesError] = useState('') // 마지막 갱신 실패 사유
   const [selectedTrade, setSelectedTrade] = useState(null) // 클릭한 트레이드
   const [chartStatus, setChartStatus] = useState('') // 로딩/에러 메시지
   const [config, setConfig] = useState(null) // 백엔드 /config (어느 거래소인지)
@@ -285,12 +300,49 @@ function App() {
       })
   }, [])
 
-  // 백엔드 /trades 에서 체결 내역을 받아온다. (지금은 가짜 데이터)
+  // 백엔드 /trades 에서 체결 내역을 받아오고, TRADES_REFRESH_MS 마다 다시 받는다.
+  //
+  // 목록(trades)만 바꾼다. 차트/리플레이는 ref 에 든 캔들로 돌고 선택 상태는
+  // selectedTrade 에 따로 있어서, 갱신이 와도 재생이나 고른 트레이드는 그대로다.
+  //
+  // setInterval 이 아니라 응답이 끝난 뒤 다음 호출을 예약한다. 거래소 응답이
+  // 느려도 요청이 겹쳐 쌓이지 않는다.
   useEffect(() => {
-    fetch(`${API_BASE}/trades`)
-      .then((res) => res.json())
-      .then((data) => setTrades(Array.isArray(data) ? data : []))
-      .catch((err) => console.error('Failed to load trades:', err))
+    let timer = null
+    let controller = null
+    let stopped = false
+
+    const load = async () => {
+      controller = new AbortController()
+      setTradesLoading(true)
+      try {
+        const res = await fetch(`${API_BASE}/trades`, { signal: controller.signal })
+        const data = await res.json()
+        // 서버가 실패하면 { error } 를 준다. 그때 목록을 비우지 않고 이전 것을 둔다.
+        if (!res.ok || !Array.isArray(data)) {
+          throw new Error(data?.error ?? `HTTP ${res.status}`)
+        }
+        setTrades((prev) => (sameFills(prev, data) ? prev : data))
+        setTradesUpdatedAt(Date.now())
+        setTradesError('')
+      } catch (err) {
+        if (err.name === 'AbortError') return
+        console.error('Failed to load trades:', err)
+        setTradesError(err.message)
+      } finally {
+        if (!stopped) {
+          setTradesLoading(false)
+          timer = setTimeout(load, TRADES_REFRESH_MS)
+        }
+      }
+    }
+
+    load()
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+      controller?.abort()
+    }
   }, [])
 
   // 시작 화면: 1시간봉 100개. 거래소를 알게 된 뒤에 불러온다.
@@ -535,6 +587,16 @@ function App() {
             </strong>{' '}
             (수수료 {stats.fee.toFixed(4)})
             {stats.open > 0 && ` · 미청산 ${stats.open}건`}
+          </div>
+          {/* 주기 갱신 상태. 실패해도 목록은 마지막으로 받은 것을 그대로 둔다. */}
+          <div className="faint" style={{ marginTop: 6 }}>
+            {tradesUpdatedAt
+              ? `마지막 업데이트 ${new Date(tradesUpdatedAt).toLocaleTimeString()}`
+              : '체결 내역 불러오는 중...'}
+            {tradesLoading && tradesUpdatedAt && ' · 갱신 중...'}
+            {tradesError && (
+              <span style={{ color: 'var(--down)' }}> · 갱신 실패: {tradesError}</span>
+            )}
           </div>
           <div className="faint" style={{ marginTop: 6 }}>
             한 건을 누르면 그 시점 캔들을 불러옵니다. 최신순으로 {TRADES_PER_PAGE}건씩.
