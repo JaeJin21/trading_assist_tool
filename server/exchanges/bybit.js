@@ -9,6 +9,7 @@
 //  - 실현손익 필드가 없다. (별도 엔드포인트 /v5/position/closed-pnl 에 있음)
 //    -> 공통 형식에서는 '0' 으로 두고, pairTrades 가 평균가로 계산하게 맡긴다.
 //  - limit 최대 100, 조회 구간 최대 7일.
+//  - 체결 목록에 펀딩비 정산(execType 'Funding')이 섞여 온다. 'Trade' 만 쓴다.
 
 import crypto from 'node:crypto'
 import { ROUND_TRIPS, TAKER_FEE } from '../mockTrades.js'
@@ -115,6 +116,10 @@ export function createBybitAdapter({ apiKey, apiSecret }) {
       const list = data.result?.list ?? []
       // 바이비트는 최신순으로 주므로 시간 오름차순으로 뒤집는다.
       return list
+        // 체결 내역에 펀딩비 정산(execType 'Funding')이 섞여 온다. 펀딩 기록은
+        // 그 시각 보유 포지션의 수량/방향을 담고 있어서, 매매로 세면 순포지션이
+        // 어긋나 청산한 포지션이 '미청산'으로 남는다. 실제 매매만 넘긴다.
+        .filter((raw) => raw.execType === 'Trade')
         .map(normalizeFill)
         .sort((a, b) => a.time - b.time)
     },
